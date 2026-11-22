@@ -342,3 +342,20 @@ The bar is: **your work is clean.**
 6. Published output stays clean: clean HTML, clean CSS, clean TypeScript. No exceptions.
 7. Documentation tracks code — update [`docs/`](docs/) in the same change. Read [`docs/README.md`](docs/README.md) for orientation.
 8. Verify once at the end. Pre-existing failures from parallel sessions are not yours to fix.
+
+---
+
+## Форк akimovdigital
+
+Этот клон — личный форк `akimovdigital/Instatic` (публичный форк `CoreBunch/Instatic`). Раздел задаёт, куда попадает своя работа. Остальной текст файла — правила автора и действует для кода. База своих pull request в этом форке — `local/instatic-dev`. Прямой push в `main` бывает только как fast-forward зеркала автора.
+
+Полный текст: [`docs/fork-workflow.md`](docs/fork-workflow.md). Те же правила для агентов Cursor: [`.cursor/rules/fork-workflow.mdc`](.cursor/rules/fork-workflow.mdc).
+
+- `main` — чистое зеркало автора, только fast-forward с `upstream` (`https://github.com/CoreBunch/Instatic.git`) и обычный push на `origin`. Своих коммитов в `main` нет.
+- Рабочая ветка — `local/instatic-dev`. Каждая задача — своя ветка `feat/`, `fix/`, `perf/` или `chore/`. Pull request открывается только в `local/instatic-dev`.
+- Squash в `local/instatic-dev` только после зелёных `bun run build`, `bun test`, `bun run lint` и своего ревью diff.
+- В `CoreBunch/Instatic` нет pull request, issues, комментариев и пушей без явного «да» Никиты.
+- Force push запрещён везде, кроме своей рабочей ветки до открытия pull request.
+- Ничего не удалять, кроме своей уже слитой рабочей ветки.
+- Синк с автором перед каждой задачей и не реже раза в неделю: fast-forward `main` до upstream, затем ветка `sync/upstream-<sha>` (`<sha>` — полный SHA обновлённого `main`) и pull request этой ветки в `local/instatic-dev`.
+- Устройство как у форка Doop (`akimovdigital/doop`: `main` и `local/doop-dev`). Чужие файлы оттуда не копируются.
