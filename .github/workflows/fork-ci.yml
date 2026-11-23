@@ -1,0 +1,146 @@
+name: Fork CI
+
+on:
+  pull_request:
+    branches: [local/instatic-dev]
+  workflow_call:
+    inputs:
+      ref:
+        description: Branch to check out before merging
+        type: string
+        required: true
+      merge_sha:
+        description: Commit to merge into the checked-out branch
+        type: string
+        required: true
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.merge_sha || '' }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        if: inputs.merge_sha == ''
+
+      - name: Checkout sync base
+        if: inputs.merge_sha != ''
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Merge upstream for checks
+        if: inputs.merge_sha != ''
+        env:
+          MERGE_SHA: ${{ inputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin "$MERGE_SHA"
+          git merge --no-ff --no-edit "$MERGE_SHA"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # `bun run build` is `tsc -b && vite build` — typecheck and bundle in one.
+      - name: Build
+        run: bun run build
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        if: inputs.merge_sha == ''
+
+      - name: Checkout sync base
+        if: inputs.merge_sha != ''
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Merge upstream for checks
+        if: inputs.merge_sha != ''
+        env:
+          MERGE_SHA: ${{ inputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin "$MERGE_SHA"
+          git merge --no-ff --no-edit "$MERGE_SHA"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run lint
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    # The SQLite and Postgres bridge tests need a real Postgres they may wipe.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: instatic_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      INSTATIC_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/instatic_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        if: inputs.merge_sha == ''
+
+      - name: Checkout sync base
+        if: inputs.merge_sha != ''
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Merge upstream for checks
+        if: inputs.merge_sha != ''
+        env:
+          MERGE_SHA: ${{ inputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin "$MERGE_SHA"
+          git merge --no-ff --no-edit "$MERGE_SHA"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun test
