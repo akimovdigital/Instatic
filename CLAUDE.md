@@ -353,9 +353,10 @@ The bar is: **your work is clean.**
 
 - `main` — чистое зеркало автора, только fast-forward с `upstream` (`https://github.com/CoreBunch/Instatic.git`) и обычный push на `origin`. Своих коммитов в `main` нет.
 - Рабочая ветка — `local/instatic-dev`. Каждая задача — своя ветка `feat/`, `fix/`, `perf/` или `chore/`. Pull request открывается только в `local/instatic-dev`.
-- Squash в `local/instatic-dev` только после зелёных `bun run build`, `bun test`, `bun run lint` и своего ревью diff.
+- PR задач сливаются squash после зелёных `bun run build`, `bun test`, `bun run lint` и своего ревью diff. Единственное исключение — PR `sync/upstream-<sha>` в `local/instatic-dev` сливаются merge-коммитом.
 - В `CoreBunch/Instatic` нет pull request, issues, комментариев и пушей без явного «да» Никиты.
 - Force push запрещён везде, кроме своей рабочей ветки до открытия pull request.
 - Ничего не удалять, кроме своей уже слитой рабочей ветки.
-- Синк с автором перед каждой задачей и не реже раза в неделю: fast-forward `main` до upstream, затем ветка `sync/upstream-<sha>` (`<sha>` — полный SHA обновлённого `main`) и pull request этой ветки в `local/instatic-dev`.
+- Ручной синк — fast-forward `main` до upstream, затем PR из ветки `sync/upstream-<sha>` в `local/instatic-dev`. Возьмите первые семь символов SHA обновлённого `main`.
+- `.github/workflows/upstream-sync.yml` запускает автосинк ежедневно в 06:00 МСК. Красный sync PR или конфликт требует вмешательства человека или агента.
 - Устройство как у форка Doop (`akimovdigital/doop`: `main` и `local/doop-dev`). Чужие файлы оттуда не копируются.

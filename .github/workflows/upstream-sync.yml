@@ -1,0 +1,255 @@
+name: Upstream sync
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: CoreBunch/Instatic
+  DEV_BRANCH: local/instatic-dev
+  MIRROR_BRANCH: main
+  GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+
+jobs:
+  sync:
+    if: github.repository == 'akimovdigital/Instatic'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      needed: ${{ steps.prepare.outputs.needed }}
+      sha: ${{ steps.prepare.outputs.sha }}
+      short: ${{ steps.prepare.outputs.short }}
+      branch: ${{ steps.prepare.outputs.branch }}
+      pr: ${{ steps.prepare.outputs.pr }}
+      conflict: ${{ steps.conflict.outputs.conflict || 'false' }}
+      dev_sha: ${{ steps.prepare.outputs.dev_sha }}
+    steps:
+      - name: Update mirror and prepare sync PR
+        id: prepare
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            echo "$1" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          token_hint='Добавьте SYNC_TOKEN (fine-grained PAT с правами Contents, Pull requests и Workflows: read/write на akimovdigital/Instatic).'
+          trap 'echo "Не удалось подготовить PR синхронизации." >> "$GITHUB_STEP_SUMMARY"' ERR
+
+          check_mirror_history() {
+            UP_SHA=$(gh api "repos/$UPSTREAM_REPO/branches/$MIRROR_BRANCH" --jq .commit.sha)
+            MAIN_SHA=$(gh api "repos/$GITHUB_REPOSITORY/branches/$MIRROR_BRANCH" --jq .commit.sha)
+            if [[ "$UP_SHA" != "$MAIN_SHA" ]]; then
+              AHEAD=$(gh api "repos/$GITHUB_REPOSITORY/compare/$UP_SHA...$MAIN_SHA" --jq .ahead_by)
+              if (( AHEAD > 0 )); then
+                fail "main разошёлся с upstream: $MAIN_SHA против $UP_SHA, своих коммитов: $AHEAD. Ничего не форсим, нужна ручная проверка."
+              fi
+            fi
+          }
+
+          check_mirror_history
+          if ! gh api -X POST "repos/$GITHUB_REPOSITORY/merge-upstream" -f branch="$MIRROR_BRANCH" >/dev/null; then
+            check_mirror_history
+            fail "Fast-forward main не удался. Если upstream изменил .github/workflows, GITHUB_TOKEN не хватает права workflows. $token_hint Или запустите вручную: gh api -X POST repos/akimovdigital/Instatic/merge-upstream -f branch=main"
+          fi
+
+          SHA=$(gh api "repos/$GITHUB_REPOSITORY/branches/$MIRROR_BRANCH" --jq .commit.sha)
+          UP_SHA=$(gh api "repos/$UPSTREAM_REPO/branches/$MIRROR_BRANCH" --jq .commit.sha)
+          if [[ "$SHA" != "$UP_SHA" ]]; then
+            fail "После fast-forward main ($SHA) отличается от upstream ($UP_SHA)."
+          fi
+
+          SHORT=${SHA:0:7}
+          BRANCH="sync/upstream-$SHORT"
+          DEV_SHA=$(gh api "repos/$GITHUB_REPOSITORY/branches/$DEV_BRANCH" --jq .commit.sha)
+          COMPARE="repos/$GITHUB_REPOSITORY/compare/$DEV_SHA...$SHA"
+          STATUS=$(gh api "$COMPARE" --jq .status)
+          {
+            echo "sha=$SHA"
+            echo "short=$SHORT"
+            echo "branch=$BRANCH"
+            echo "dev_sha=$DEV_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ "$STATUS" == identical || "$STATUS" == behind ]]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "Форк синхронен с upstream $SHORT." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "needed=true" >> "$GITHUB_OUTPUT"
+
+          gh label create upstream-sync --repo "$GITHUB_REPOSITORY" --color 0E8A16 --description "Автосинк с CoreBunch/Instatic" --force || true
+          gh label create sync-conflict --repo "$GITHUB_REPOSITORY" --color B60205 --description "Конфликт с рабочей веткой" --force || true
+          gh label create needs-manual-merge --repo "$GITHUB_REPOSITORY" --color FBCA04 --description "Требуется ручное слияние" --force || true
+
+          REF_API="repos/$GITHUB_REPOSITORY/git/ref/heads/$BRANCH"
+          if ! BRANCH_SHA=$(gh api "$REF_API" --jq .object.sha); then
+            if ! gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$SHA" >/dev/null; then
+              fail "Не удалось создать $BRANCH. Для изменений в .github/workflows требуется право workflows. $token_hint"
+            fi
+          elif [[ "$BRANCH_SHA" != "$SHA" ]]; then
+            fail "Ветка $BRANCH указывает на $BRANCH_SHA вместо $SHA. Нужна ручная проверка."
+          fi
+
+          PR=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base "$DEV_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [[ -z "$PR" ]]; then
+            BODY=$(mktemp)
+            {
+              printf 'Автосинк с CoreBunch/Instatic main на `%s`.\n' "$SHA"
+              echo
+              echo "Коммиты upstream (до 100):"
+              gh api "$COMPARE" --paginate --jq '.commits[] | "- " + (.sha[0:7]) + " " + (.commit.message | split("\n")[0])' | tail -n 100
+              echo
+              echo "Слить merge-коммитом, чтобы сохранить общую историю с upstream. Squash теряет эту связь."
+            } > "$BODY"
+            PR_URL=$(gh pr create --repo "$GITHUB_REPOSITORY" --base "$DEV_BRANCH" --head "$BRANCH" --title "chore(sync): merge upstream $SHORT" --body-file "$BODY")
+            PR=${PR_URL##*/}
+          fi
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label upstream-sync
+
+          OPEN_SYNCS=$(gh api --method GET "repos/$GITHUB_REPOSITORY/issues" -f labels=upstream-sync -f state=open -F per_page=100 --paginate --jq '.[] | select(.pull_request) | .number')
+          for OLD_PR in $OPEN_SYNCS; do
+            OLD_BRANCH=$(gh pr view "$OLD_PR" --repo "$GITHUB_REPOSITORY" --json headRefName --jq .headRefName)
+            if [[ "$OLD_BRANCH" == sync/upstream-* && "$OLD_BRANCH" != "$BRANCH" ]]; then
+              gh pr close "$OLD_PR" --repo "$GITHUB_REPOSITORY" --comment "Заменён #$PR: upstream ушёл дальше."
+            fi
+          done
+          echo "PR #$PR подготовлен для синхронизации с upstream $SHORT." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout integration branch
+        if: steps.prepare.outputs.needed == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.DEV_BRANCH }}
+          fetch-depth: 0
+
+      - name: Check for merge conflicts
+        id: conflict
+        if: steps.prepare.outputs.needed == 'true'
+        env:
+          SHA: ${{ steps.prepare.outputs.sha }}
+          PR: ${{ steps.prepare.outputs.pr }}
+        run: |
+          set -euo pipefail
+          trap 'echo "Не удалось проверить конфликты PR #$PR." >> "$GITHUB_STEP_SUMMARY"' ERR
+          git fetch origin "$SHA"
+          if RESULT=$(git merge-tree --write-tree --name-only --no-messages "origin/$DEV_BRANCH" "$SHA"); then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+            echo "Конфликтов в PR #$PR нет." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          else
+            STATUS=$?
+          fi
+          if (( STATUS != 1 )); then
+            echo "::error::git merge-tree завершился с кодом $STATUS."
+            echo "Проверка конфликтов PR #$PR завершилась ошибкой." >> "$GITHUB_STEP_SUMMARY"
+            exit "$STATUS"
+          fi
+
+          echo "conflict=true" >> "$GITHUB_OUTPUT"
+          echo "Конфликт слияния в PR #$PR. PR оставлен открытым." >> "$GITHUB_STEP_SUMMARY"
+          BODY=$(mktemp)
+          {
+            echo "Конфликтующие файлы:"
+            echo
+            echo '~~~text'
+            printf '%s\n' "$RESULT" | sed '1d'
+            echo '~~~'
+            echo
+            printf 'Разрешите конфликт вручную в ветке от `%s` командой `git merge %s`.\n' "$DEV_BRANCH" "$SHA"
+            echo 'Сохраните `docs/fork-workflow.md`, `.cursor/rules/fork-workflow.mdc`, `.github/workflows/fork-ci.yml`, `.github/workflows/upstream-sync.yml` и раздел «Форк akimovdigital» в `CLAUDE.md`.'
+            printf 'Откройте PR в `%s` и слейте его merge-коммитом.\n' "$DEV_BRANCH"
+          } > "$BODY"
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label sync-conflict
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file "$BODY"
+          exit 1
+
+  checks:
+    needs: sync
+    if: github.repository == 'akimovdigital/Instatic' && needs.sync.outputs.needed == 'true' && needs.sync.outputs.conflict != 'true'
+    uses: ./.github/workflows/fork-ci.yml
+    with:
+      ref: local/instatic-dev
+      merge_sha: ${{ needs.sync.outputs.sha }}
+    permissions:
+      contents: read
+
+  merge:
+    needs: [sync, checks]
+    if: github.repository == 'akimovdigital/Instatic' && needs.sync.outputs.needed == 'true' && needs.checks.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Merge tested upstream PR
+        env:
+          PR: ${{ needs.sync.outputs.pr }}
+          SHORT: ${{ needs.sync.outputs.short }}
+          SHA: ${{ needs.sync.outputs.sha }}
+          BRANCH: ${{ needs.sync.outputs.branch }}
+          DEV_SHA: ${{ needs.sync.outputs.dev_sha }}
+        run: |
+          set -euo pipefail
+
+          trap 'echo "Не удалось подтвердить результат слияния PR #$PR." >> "$GITHUB_STEP_SUMMARY"' ERR
+          CURRENT_DEV_SHA=$(gh api "repos/$GITHUB_REPOSITORY/branches/$DEV_BRANCH" --jq .commit.sha)
+          if [[ "$CURRENT_DEV_SHA" != "$DEV_SHA" ]]; then
+            ERROR="Ветка $DEV_BRANCH обновилась во время синхронизации. Запустите автосинк повторно."
+          elif ERROR=$(gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --merge --match-head-commit "$SHA" --subject "chore(sync): merge upstream $SHORT (#$PR)" --body "Автосинк: CoreBunch/Instatic main $SHA, проверки build/lint/test зелёные." 2>&1); then
+            PR_STATE=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json state --jq .state)
+            if [[ "$PR_STATE" == MERGED ]]; then
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH" || true
+              echo "Слит #$PR, $DEV_BRANCH содержит upstream $SHORT." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            ERROR="GitHub вернул состояние $PR_STATE. Слияние не подтверждено."
+          fi
+
+          echo "Слияние PR #$PR заблокировано. PR оставлен открытым." >> "$GITHUB_STEP_SUMMARY"
+          BODY=$(mktemp)
+          {
+            echo "Не удалось автоматически слить PR #$PR."
+            echo
+            echo '~~~text'
+            printf '%s\n' "$ERROR"
+            echo '~~~'
+            echo
+            echo 'Если GitHub отклонил изменения в .github/workflows, добавьте SYNC_TOKEN с правами Contents, Pull requests и Workflows: read/write.'
+          } > "$BODY"
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-manual-merge
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file "$BODY"
+          exit 1
+
+  report-failed-checks:
+    needs: [sync, checks]
+    if: always() && github.repository == 'akimovdigital/Instatic' && needs.sync.outputs.needed == 'true' && needs.checks.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Report failed checks on the PR
+        env:
+          PR: ${{ needs.sync.outputs.pr }}
+        run: |
+          set -euo pipefail
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          MESSAGE="Проверки упали, PR оставлен открытым: $RUN_URL"
+          echo "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "$MESSAGE"
+          exit 1
