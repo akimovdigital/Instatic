@@ -130,7 +130,7 @@ test('owner prepares a branch and an editor without merge rights', async ({ page
     body: { email: EDITOR.email, displayName: EDITOR.name, password: EDITOR.password, roleId },
   })
   if (user.status !== 201) {
-    const users = await api<{ users: Array<{ id: string; email: string }> }>(page, '/admin/api/cms/users')
+    const users = await api<{ users: Array<{ id: string; email: string }> }>(page, `/admin/api/cms/users?q=${encodeURIComponent(EDITOR.email)}`)
     const existing = users.body.users.find((entry) => entry.email === EDITOR.email)
     expect(existing, `user create answered ${user.status}: ${JSON.stringify(user.body)}`).toBeDefined()
     const patched = await api(page, `/admin/api/cms/users/${existing!.id}`, { method: 'PATCH', body: { roleId } })
@@ -203,10 +203,13 @@ test('the editor edits the branch, reads the review, comments and requests a mer
   // render, found by their node ids.
   await expect(homeChange.locator('[data-tone="changed"]')).toHaveCount(1)
   await expect(homeChange.locator('[data-tone="added"]')).toHaveCount(1)
-  // The badge carries the node's editor name; a bare module id stays hidden.
-  await expect(homeChange.locator('[data-tone="changed"]')).toContainText('Headline')
-  await expect(homeChange.locator('[data-tone="added"]')).toHaveText('Added')
+  await expect(homeChange.locator('[data-tone="changed"]')).toBeEmpty()
+  await expect(homeChange.locator('[data-tone="added"]')).toBeEmpty()
   await shot(page, '1-editor-review')
+
+  await homeChange.getByRole('button', { name: 'What changed' }).click()
+  await expect(homeChange.getByText(/Changed Headline:.*Launch week starts Monday/)).toBeVisible()
+  await homeChange.getByRole('button', { name: 'Side by side' }).click()
 
   await page.getByTestId(`review-thread-row:${home.id}-input`).fill('New headline for launch week; the rest of the page is untouched.')
   await page.getByTestId(`review-thread-row:${home.id}-submit`).click()
