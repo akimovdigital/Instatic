@@ -91,7 +91,7 @@ The route table (`src/admin/router.tsx`):
 | `/admin/plugins`                        | `<AdminEntry section="plugins" />` |
 | `/admin/users`                          | `<AdminEntry section="users" />` |
 | `/admin/ai`                             | `<AdminEntry section="ai" />` (AI credentials, models, defaults) |
-| `/admin/account`                        | `<AdminEntry section="account" />` with workspace tabs for Profile, Active devices, Security, and Sign-in history |
+| `/admin/account`                        | `<AdminEntry section="account" />` with Overview (profile picture and name, inline email and password editing, and account protection), Active devices, and Sign-in history |
 | `/admin/plugins/:pluginId/:pageId`      | `<AdminEntry section="pluginPage" />` |
 
 Every route is wrapped with `withRouteBoundary(...)` → `<ErrorBoundary location="admin-route" resetKeys={[pathname]}>` and `<Suspense fallback={<AppLoadingScreen />}>`. The error boundary resets when the pathname changes so a broken route never strands the user.
@@ -533,7 +533,7 @@ Canvas-internal values are not CSS tokens — they are raw integers intentionall
 
 ### Panel rail
 
-42px-wide vertical strip on the far left. Primary navigation panels sit in the top group; global workspace actions such as the AI assistant are pinned to the bottom group. Each button gets an automatic rail tint from its full panel identity, with repeats avoided inside the visible rail group, and opens a panel in the left sidebar. Implementation: `src/admin/pages/site/sidebars/PanelRail/PanelRail.module.css`.
+42px-wide vertical strip on the far left. A short divider separates installed plugin panels from the built-in panels when both groups are present. Primary navigation panels sit in the top group; global workspace actions such as the AI assistant are pinned to the bottom group. Each button gets an automatic rail tint from its full panel identity, with repeats avoided inside the visible rail group, and opens a panel in the left sidebar. Implementation: `src/admin/pages/site/sidebars/PanelRail/PanelRail.module.css`.
 
 In portrait viewports up to 760px wide, the Site, Content, Data and Media workspaces place the docked rail panel below the canvas. Closing it gives the canvas the full workspace height. Returning to a wider viewport restores the saved sidebar width.
 
@@ -561,6 +561,7 @@ Every built-in left-rail panel, including AI, can be undocked independently;
 the active plugin panel follows the same host contract. An undocked panel stays open as its own draggable canvas window
 while another rail item can open normally in the left sidebar. Its rail icon is
 muted while detached, and the panel header can dock it back into the sidebar.
+The shared `PanelModeButton` uses a picture-in-picture icon for **Undock to canvas**.
 Each floating window has its own keyboard-accessible bottom-right resize handle
 (arrow keys resize by 10px; Shift+arrow by 40px). Built-in panel modes, open
 state, positions, and dimensions are persisted through
